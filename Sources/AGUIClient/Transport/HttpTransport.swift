@@ -154,6 +154,7 @@ public actor HttpTransport {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         guard response.statusCode == 200, mediaType == "text/event-stream" else {
+            response.cancel()
             throw ClientError.invalidResponse
         }
 
