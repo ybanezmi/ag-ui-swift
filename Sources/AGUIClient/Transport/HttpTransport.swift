@@ -67,8 +67,7 @@ public actor HttpTransport {
             headers["User-Agent"] = "AGUISwift/1.0"
             sessionConfig.httpAdditionalHeaders = headers
 
-            let session = URLSession(configuration: sessionConfig)
-            self.httpClient = URLSessionHTTPClient(session: session)
+            self.httpClient = URLSessionHTTPClient.create(configuration: sessionConfig)
         }
     }
 
@@ -145,6 +144,7 @@ public actor HttpTransport {
 
         // Validate HTTP status code
         guard (200 ... 299).contains(response.statusCode) else {
+            response.cancel()
             throw ClientError.httpError(statusCode: response.statusCode)
         }
 

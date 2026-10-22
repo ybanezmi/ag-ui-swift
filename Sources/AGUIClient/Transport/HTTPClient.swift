@@ -31,6 +31,15 @@ public struct HTTPResponse: Sendable {
     /// incremental consumption of the response body.
     public let bytes: AsyncThrowingStream<UInt8, Error>
 
+    /// Cancellation action for the underlying request.
+    ///
+    /// Call this after ending iteration early while retaining the response or
+    /// stream. Breaking out of a loop alone does not terminate a retained stream.
+    /// The default URLSession client cancels its request and finishes the stream;
+    /// calling it more than once is safe. Custom clients must supply their own
+    /// cancellation action; the initializer's default action does nothing.
+    public let cancel: @Sendable () -> Void
+
     /// HTTP response metadata.
     public let httpResponse: HTTPURLResponse
 
@@ -49,8 +58,14 @@ public struct HTTPResponse: Sendable {
     /// - Parameters:
     ///   - bytes: Streaming response bytes as an `AsyncThrowingStream<UInt8, Error>`
     ///   - httpResponse: HTTP response metadata
-    public init(bytes: AsyncThrowingStream<UInt8, Error>, httpResponse: HTTPURLResponse) {
+    ///   - cancel: Cancellation action for the underlying request (default: no action)
+    public init(
+        bytes: AsyncThrowingStream<UInt8, Error>,
+        httpResponse: HTTPURLResponse,
+        cancel: @escaping @Sendable () -> Void = {}
+    ) {
         self.bytes = bytes
         self.httpResponse = httpResponse
+        self.cancel = cancel
     }
 }

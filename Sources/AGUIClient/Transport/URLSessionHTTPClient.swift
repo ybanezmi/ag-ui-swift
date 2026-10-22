@@ -10,12 +10,15 @@ import Foundation
 ///
 public actor URLSessionHTTPClient: HTTPClient {
     private let session: URLSession
+    private let ownsSession: Bool
 
     /// Creates a new URLSession HTTP client with the specified session.
     ///
     /// This is the primary initializer that accepts a URLSession instance,
     /// enabling full control over session configuration and injection of
     /// mock sessions for testing.
+    ///
+    /// The caller retains ownership; releasing this client never invalidates the session.
     ///
     /// - Parameter session: The URLSession to use for requests
     ///
@@ -29,12 +32,23 @@ public actor URLSessionHTTPClient: HTTPClient {
     /// ```
     public init(session: URLSession) {
         self.session = session
+        ownsSession = false
+    }
+
+    private init(ownedSession: URLSession) {
+        session = ownedSession
+        ownsSession = true
+    }
+
+    deinit {
+        if ownsSession { session.invalidateAndCancel() }
     }
 
     /// Creates a new URLSession HTTP client with the specified configuration.
     ///
     /// This factory method provides a convenient way to create a client
-    /// with custom URLSession configuration.
+    /// with custom URLSession configuration. The client owns the created session
+    /// and invalidates it when released.
     ///
     /// - Parameter configuration: URLSession configuration (default: .default)
     /// - Returns: A new URLSession HTTP client
@@ -50,7 +64,7 @@ public actor URLSessionHTTPClient: HTTPClient {
         configuration: URLSessionConfiguration = .default
     ) -> URLSessionHTTPClient {
         let session = URLSession(configuration: configuration)
-        return URLSessionHTTPClient(session: session)
+        return URLSessionHTTPClient(ownedSession: session)
     }
 
     /// Executes an HTTP request using URLSession.
@@ -77,36 +91,47 @@ public actor URLSessionHTTPClient: HTTPClient {
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
+            bytes.task.cancel()
             throw ClientError.invalidResponse
         }
 
         // Bridge URLSession.AsyncBytes → AsyncThrowingStream<UInt8, Error> so that
         // HTTPResponse is decoupled from URLSession and can be mocked in tests.
-        let stream = AsyncThrowingStream<UInt8, Error> { continuation in
-            Task {
-                do {
-                    for try await byte in bytes {
-                        continuation.yield(byte)
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+        let (stream, continuation) = AsyncThrowingStream<UInt8, Error>.makeStream()
+        // This producer bridges a callback-style stream to an async sequence. Its
+        // handle is retained by termination/cancellation and cancelled with the request.
+        let producer = Task {
+            do {
+                for try await byte in bytes {
+                    try Task.checkCancellation()
+                    guard case .enqueued = continuation.yield(byte) else { break }
                 }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
             }
         }
+        continuation.onTermination = { _ in
+            producer.cancel()
+            bytes.task.cancel()
+        }
 
-        return HTTPResponse(bytes: stream, httpResponse: httpResponse)
+        return HTTPResponse(bytes: stream, httpResponse: httpResponse, cancel: {
+            producer.cancel()
+            bytes.task.cancel()
+            continuation.finish(throwing: CancellationError())
+        })
     }
 
     /// Maps URLError to ClientError.
     private func mapURLError(_ error: URLError) -> ClientError {
         switch error.code {
         case .timedOut:
-            return .timeout
+            .timeout
         case .cancelled:
-            return .cancelled
+            .cancelled
         default:
-            return .networkError(error)
+            .networkError(error)
         }
     }
 }
