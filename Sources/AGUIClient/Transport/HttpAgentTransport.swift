@@ -11,23 +11,23 @@ public struct HttpAgentTransport: AgentTransport {
 
     public init(configuration: HttpAgentConfiguration, endpoint: String = "/run") {
         self.configuration = configuration
-        self.transport = HttpTransport(configuration: configuration)
-        self.decoder = AGUIEventDecoder()
+        transport = HttpTransport(configuration: configuration)
+        decoder = AGUIEventDecoder()
         self.endpoint = endpoint
     }
 
     public init(configuration: HttpAgentConfiguration, httpClient: any HTTPClient, endpoint: String = "/run") {
         self.configuration = configuration
-        self.transport = HttpTransport(configuration: configuration, httpClient: httpClient)
-        self.decoder = AGUIEventDecoder()
+        transport = HttpTransport(configuration: configuration, httpClient: httpClient)
+        decoder = AGUIEventDecoder()
         self.endpoint = endpoint
     }
 
     public func run(input: RunAgentInput) -> AsyncThrowingStream<any AGUIEvent, Error> {
-        let transport = self.transport
-        let decoder = self.decoder
-        let endpoint = self.endpoint
-        let configuration = self.configuration
+        let transport = transport
+        let decoder = decoder
+        let endpoint = endpoint
+        let configuration = configuration
 
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -42,7 +42,9 @@ public struct HttpAgentTransport: AgentTransport {
                             input: input,
                             lastEventId: lastEventId
                         )
-                        let eventStream = EventStream(bytes: bytes, decoder: decoder)
+                        let eventStream = EventStream(bytes: bytes, decoder: decoder,
+                                                      decodingPolicy: configuration.decodingPolicy,
+                                                      maximumEventByteCount: configuration.maximumEventByteCount)
                         currentStream = eventStream
                         for try await event in eventStream {
                             continuation.yield(event)
@@ -78,9 +80,9 @@ public struct HttpAgentTransport: AgentTransport {
         switch configuration.retryPolicy {
         case .none:
             return false
-        case .fixed(let maxAttempts, _):
+        case let .fixed(maxAttempts, _):
             return attempt < maxAttempts
-        case .exponentialBackoff(let maxAttempts, _):
+        case let .exponentialBackoff(maxAttempts, _):
             return attempt < maxAttempts
         }
     }
@@ -98,11 +100,11 @@ public struct HttpAgentTransport: AgentTransport {
     private func retryDelay(for attempt: Int, configuration: HttpAgentConfiguration) -> TimeInterval {
         switch configuration.retryPolicy {
         case .none:
-            return 0
-        case .fixed(_, let delay):
-            return delay
-        case .exponentialBackoff(_, let baseDelay):
-            return min(baseDelay * pow(2.0, Double(attempt)), 60.0)
+            0
+        case let .fixed(_, delay):
+            delay
+        case let .exponentialBackoff(_, baseDelay):
+            min(baseDelay * pow(2.0, Double(attempt)), 60.0)
         }
     }
 }

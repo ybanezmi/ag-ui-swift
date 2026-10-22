@@ -16,6 +16,12 @@ public struct HttpAgentConfiguration: Sendable {
     /// Additional HTTP headers to include in requests.
     public var headers: [String: String]
 
+    /// Controls whether malformed SSE events are skipped or reported (default: tolerant).
+    public var decodingPolicy: EventStreamDecodingPolicy
+
+    /// Positive maximum UTF-8 bytes buffered for one SSE event (default: 10 MiB).
+    public var maximumEventByteCount: Int
+
     /// When `true`, enables verbose pipeline logging.
     ///
     /// Default: `false`
@@ -89,31 +95,38 @@ public struct HttpAgentConfiguration: Sendable {
     ///   - retryPolicy: Retry policy for failures (default: .none)
     ///   - headers: Additional HTTP headers (default: empty)
     ///   - debug: Enable verbose pipeline logging (default: false)
+    ///   - decodingPolicy: Malformed event handling (default: tolerant)
+    ///   - maximumEventByteCount: Positive per-event parser memory limit
     public init(
         baseURL: URL,
         timeout: TimeInterval = 120.0,
         retryPolicy: RetryPolicy = .none,
         headers: [String: String] = [:],
-        debug: Bool = false
+        debug: Bool = false,
+        decodingPolicy: EventStreamDecodingPolicy = .tolerant,
+        maximumEventByteCount: Int = SseParser.maxBufferByteCount
     ) {
+        precondition(maximumEventByteCount > 0, "The event size limit must be positive")
+        self.decodingPolicy = decodingPolicy
+        self.maximumEventByteCount = maximumEventByteCount
         self.baseURL = baseURL
         self.timeout = timeout
         self.retryPolicy = retryPolicy
         self.headers = headers
         self.debug = debug
-        self.bearerToken = nil
-        self.apiKey = nil
-        self.apiKeyHeader = "X-API-Key"
+        bearerToken = nil
+        apiKey = nil
+        apiKeyHeader = "X-API-Key"
     }
 }
 
-extension HttpAgentConfiguration {
+public extension HttpAgentConfiguration {
     /// Creates a configuration with the specified base URL string.
     ///
     /// - Parameter baseURLString: The base URL string
     /// - Throws: `ClientError.invalidURL` if the URL string is invalid
     /// - Returns: A new configuration instance
-    public static func create(baseURLString: String) throws -> HttpAgentConfiguration {
+    static func create(baseURLString: String) throws -> HttpAgentConfiguration {
         guard let url = URL(string: baseURLString) else {
             throw ClientError.invalidURL
         }

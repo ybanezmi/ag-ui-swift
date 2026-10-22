@@ -8,33 +8,37 @@ public final class HttpAgent: Sendable {
     private let httpTransport: HttpTransport
     private let decoder: AGUIEventDecoder
     private let defaultEndpoint: String
+    private let configuration: HttpAgentConfiguration
 
     public init(baseURL: URL) {
         let config = HttpAgentConfiguration(baseURL: baseURL)
         let agentTransport = HttpAgentTransport(configuration: config)
-        self.abstractAgent = AbstractAgent(transport: agentTransport, debug: config.debug)
-        self.httpTransport = HttpTransport(configuration: config)
-        self.decoder = AGUIEventDecoder()
-        self.defaultEndpoint = "/run"
+        configuration = config
+        abstractAgent = AbstractAgent(transport: agentTransport, debug: config.debug)
+        httpTransport = HttpTransport(configuration: config)
+        decoder = AGUIEventDecoder()
+        defaultEndpoint = "/run"
     }
 
     public init(configuration: HttpAgentConfiguration) {
+        self.configuration = configuration
         let agentTransport = HttpAgentTransport(configuration: configuration)
-        self.abstractAgent = AbstractAgent(transport: agentTransport, debug: configuration.debug)
-        self.httpTransport = HttpTransport(configuration: configuration)
-        self.decoder = AGUIEventDecoder()
-        self.defaultEndpoint = "/run"
+        abstractAgent = AbstractAgent(transport: agentTransport, debug: configuration.debug)
+        httpTransport = HttpTransport(configuration: configuration)
+        decoder = AGUIEventDecoder()
+        defaultEndpoint = "/run"
     }
 
     public init(
         configuration: HttpAgentConfiguration,
         httpClient: any HTTPClient
     ) {
+        self.configuration = configuration
         let agentTransport = HttpAgentTransport(configuration: configuration, httpClient: httpClient)
-        self.abstractAgent = AbstractAgent(transport: agentTransport, debug: configuration.debug)
-        self.httpTransport = HttpTransport(configuration: configuration, httpClient: httpClient)
-        self.decoder = AGUIEventDecoder()
-        self.defaultEndpoint = "/run"
+        abstractAgent = AbstractAgent(transport: agentTransport, debug: configuration.debug)
+        httpTransport = HttpTransport(configuration: configuration, httpClient: httpClient)
+        decoder = AGUIEventDecoder()
+        defaultEndpoint = "/run"
     }
 
     public func run(
@@ -45,7 +49,8 @@ public final class HttpAgent: Sendable {
             endpoint: endpoint ?? defaultEndpoint,
             input: input
         )
-        return EventStream(bytes: bytes, decoder: decoder)
+        return EventStream(bytes: bytes, decoder: decoder, decodingPolicy: configuration.decodingPolicy,
+                           maximumEventByteCount: configuration.maximumEventByteCount)
     }
 
     public func run(
