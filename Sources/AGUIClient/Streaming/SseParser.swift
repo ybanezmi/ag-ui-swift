@@ -9,78 +9,78 @@ import Foundation
 /// and returns complete events as they become available.
 ///
 public struct SseParser {
-    /// Maximum number of UTF-8 bytes the internal buffer may hold.
-    ///
-    /// If a stream sends data faster than complete events arrive — or sends a
-    /// pathologically large payload without a double-newline terminator — the
-    /// buffer is reset and parsing continues with the next chunk. This prevents
-    /// unbounded memory growth from malformed or malicious streams.
-    public static let maxBufferByteCount = 10 * 1_048_576 // 10 MB
+    /// Default maximum UTF-8 bytes retained for a single event (10 MiB).
+    public static let maxBufferByteCount = 10 * 1_048_576
 
-    /// Internal buffer for incomplete events.
-    private var buffer: String = ""
+    private let maximumEventByteCount: Int
+    private var buffer: [UInt8] = []
+    private var lineIsEmpty = true
+    private var previousWasCR = false
+    private var discardingEvent = false
 
-    /// Creates a new SSE parser.
-    public init() {}
+    /// Creates a parser with a positive per-event memory limit.
+    ///
+    /// Oversized events are discarded through the next blank line, so their
+    /// remaining fields cannot be interpreted as a new event.
+    /// - Parameter maximumEventByteCount: Maximum buffered bytes, including line endings.
+    public init(maximumEventByteCount: Int = Self.maxBufferByteCount) {
+        precondition(maximumEventByteCount > 0, "The event size limit must be positive")
+        self.maximumEventByteCount = maximumEventByteCount
+    }
 
-    /// Parses a chunk of SSE data and returns complete events.
-    ///
-    /// This method is designed for incremental parsing of streaming data.
-    /// Incomplete events are buffered internally and will be completed
-    /// when subsequent chunks arrive.
-    ///
-    /// - Parameter chunk: A chunk of SSE text data
-    /// - Returns: Array of complete events parsed from this chunk
-    ///
-    /// ## Example
-    ///
-    /// ```swift
-    /// var parser = SseParser()
-    ///
-    /// // First chunk: incomplete event
-    /// var events = parser.parse("data: {\"te")
-    /// // returns: []
-    ///
-    /// // Second chunk: completes the event
-    /// events = parser.parse("st\":\"value\"}\n\n")
-    /// // returns: [SseEvent(data: "{\"test\":\"value\"}")]
-    /// ```
-    ///
-    /// ## Edge Cases
-    ///
-    /// - Empty chunks are handled gracefully
-    /// - Partial UTF-8 sequences are preserved in buffer
-    /// - Very long lines are supported
-    /// - Multiple events in one chunk are all returned
+    /// Parses text incrementally, returning complete events and ignoring malformed events.
+    /// CRLF pairs are recognized even when split across calls. The memory limit
+    /// applies to individual events rather than the size of the supplied chunk.
     public mutating func parse(_ chunk: String) -> [SseEvent] {
-        // Normalize all line endings to \n per SSE spec (WHATWG):
-        // \r\n and \r are both valid line ending sequences.
-        let normalized = chunk.replacingOccurrences(of: "\r\n", with: "\n")
-                              .replacingOccurrences(of: "\r", with: "\n")
-        buffer += normalized
-
-        // Guard against unbounded buffer growth from malformed/malicious streams.
-        guard buffer.utf8.count <= Self.maxBufferByteCount else {
-            buffer = ""
-            return []
-        }
-
         var events: [SseEvent] = []
-
-        // Split on double newline (event separator — handles \n\n after normalization)
-        let parts = buffer.components(separatedBy: "\n\n")
-
-        // Keep the last part in buffer (might be incomplete)
-        buffer = parts.last ?? ""
-
-        // Process complete events (all parts except the last)
-        for part in parts.dropLast() where !part.isEmpty {
-            if let event = parseEvent(part) {
+        for byte in chunk.utf8 {
+            if let event = try? consume(byte, policy: .tolerant) {
                 events.append(event)
             }
         }
-
         return events
+    }
+
+    /// Feeds a byte without accumulating an unbounded line or UTF-8 buffer.
+    mutating func consume(_ byte: UInt8, policy: EventStreamDecodingPolicy) throws -> SseEvent? {
+        if previousWasCR {
+            previousWasCR = false
+            if byte == 10 { return nil }
+        }
+        if byte == 13 { previousWasCR = true }
+        let isNewline = byte == 10 || byte == 13
+        if isNewline, lineIsEmpty {
+            defer {
+                buffer.removeAll(keepingCapacity: true)
+                discardingEvent = false
+            }
+            guard !discardingEvent, !buffer.isEmpty else { return nil }
+            guard let text = String(bytes: buffer, encoding: .utf8) else {
+                if policy == .strict { throw EventStreamError.invalidUTF8 }
+                return nil
+            }
+            return parseEvent(text)
+        }
+        lineIsEmpty = isNewline
+        guard !discardingEvent else { return nil }
+        guard buffer.count < maximumEventByteCount else {
+            buffer.removeAll(keepingCapacity: true)
+            discardingEvent = true
+            if policy == .strict {
+                throw EventStreamError.eventTooLarge(maximumByteCount: maximumEventByteCount)
+            }
+            return nil
+        }
+        buffer.append(isNewline ? 10 : byte)
+        return nil
+    }
+
+    /// Validates unfinished data when the input ends. SSE requires a blank-line terminator.
+    mutating func finish(policy: EventStreamDecodingPolicy) throws {
+        defer { reset() }
+        guard policy == .strict, !buffer.isEmpty || discardingEvent else { return }
+        if String(bytes: buffer, encoding: .utf8) == nil { throw EventStreamError.invalidUTF8 }
+        throw EventStreamError.incompleteEvent
     }
 
     /// Parses a single complete event from its text representation.
@@ -163,6 +163,9 @@ public struct SseParser {
     /// let events = parser.parse("data: new\n\n")
     /// ```
     public mutating func reset() {
-        buffer = ""
+        buffer.removeAll(keepingCapacity: true)
+        lineIsEmpty = true
+        previousWasCR = false
+        discardingEvent = false
     }
 }

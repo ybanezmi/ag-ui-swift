@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Perfect Aduh. MIT License. See LICENSE for details.
 
-import XCTest
 @testable import AGUIClient
+import XCTest
 
 /// Comprehensive tests for Server-Sent Events (SSE) parser.
 ///
@@ -17,6 +17,55 @@ import XCTest
 /// - Empty events (heartbeat)
 /// - UTF-8 edge cases
 final class SseParserTests: XCTestCase {
+    func testCRLFSplitAcrossChunksDoesNotDispatchEarly() {
+        var parser = SseParser()
+        XCTAssertTrue(parser.parse("data: first\r").isEmpty)
+        XCTAssertTrue(parser.parse("\ndata: second\r").isEmpty)
+        let events = parser.parse("\n\r\n")
+        XCTAssertEqual(events.map(\.data), ["first\nsecond"])
+    }
+
+    func testOversizedEventCannotDispatchItsSuffix() {
+        var parser = SseParser(maximumEventByteCount: 32)
+        XCTAssertTrue(parser.parse(String(repeating: "x", count: 33)).isEmpty)
+        let events = parser.parse("data: suffix\n\ndata: valid\n\n")
+        XCTAssertEqual(events.map(\.data), ["valid"])
+    }
+
+    func testEveryCRLFChunkBoundaryMatchesWholeInput() {
+        let input = "data: first\r\ndata: second\r\n\r\ndata: third\r\n\r\n"
+        let bytes = Array(input.utf8)
+        for index in 0 ... bytes.count {
+            var parser = SseParser()
+            let events = parser.parse(String(decoding: bytes[..<index], as: UTF8.self))
+                + parser.parse(String(decoding: bytes[index...], as: UTF8.self))
+            XCTAssertEqual(events.map(\.data), ["first\nsecond", "third"])
+        }
+    }
+
+    func testLargeChunkOfSmallEventsDoesNotExceedPerEventLimit() {
+        var parser = SseParser(maximumEventByteCount: 16)
+        let events = parser.parse(String(repeating: "data: small\n\n", count: 100))
+        XCTAssertEqual(events.count, 100)
+    }
+
+    func testExactNormalizedByteLimitAcceptedAndNextByteRejected() throws {
+        for ending in ["\n", "\r", "\r\n"] {
+            var exact = SseParser(maximumEventByteCount: 8)
+            var oversized = SseParser(maximumEventByteCount: 8)
+            let events = exact.parse("data: x" + ending + ending)
+            XCTAssertEqual(events.map(\.data), ["x"])
+            XCTAssertTrue(oversized.parse("data: xx" + ending + ending).isEmpty)
+
+            var strict = SseParser(maximumEventByteCount: 8)
+            XCTAssertThrowsError(try Array(("data: xx" + ending + ending).utf8).forEach {
+                _ = try strict.consume($0, policy: .strict)
+            }) { error in
+                XCTAssertEqual(error as? EventStreamError, .eventTooLarge(maximumByteCount: 8))
+            }
+        }
+    }
+
     // MARK: - Basic Parsing Tests
 
     func testParseSingleEvent() {
@@ -453,7 +502,7 @@ final class SseParserTests: XCTestCase {
         let iterations = 1000
         var totalEvents = 0
 
-        for i in 0..<iterations {
+        for i in 0 ..< iterations {
             let events = parser.parse("data: event\(i)\n\n")
             totalEvents += events.count
         }
