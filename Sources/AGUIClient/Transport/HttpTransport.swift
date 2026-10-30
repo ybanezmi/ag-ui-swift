@@ -115,7 +115,7 @@ public actor HttpTransport {
     /// ## Response Validation
     ///
     /// Validates the HTTP response:
-    /// - A streaming run must return HTTP 200
+    /// - Status code must be 200-299
     /// - Content-Type must be `text/event-stream` (parameters are accepted)
     ///
     /// ## Error Handling
@@ -123,7 +123,7 @@ public actor HttpTransport {
     /// Throws `ClientError` for:
     /// - Encoding failures → `.encodingError`
     /// - Non-2xx status codes → `.httpError(statusCode:)`
-    /// - Invalid responses → `.invalidResponse`
+    /// - Missing or non-SSE Content-Type → `.invalidResponse`
     /// - Network errors → `.networkError`, `.timeout`, `.cancelled`
     public func execute(
         endpoint: String,
@@ -171,7 +171,7 @@ public actor HttpTransport {
             .first?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        guard response.statusCode == 200, mediaType == "text/event-stream" else {
+        guard mediaType == "text/event-stream" else {
             throw ClientError.invalidResponse
         }
 
